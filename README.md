@@ -1,21 +1,40 @@
-# Metals Ratio Tracker
+# Commodity Ratio Tracker
 
-Tracks historical price ratios between major equity indices and precious metals (gold/silver). Uses ML to detect when metals are historically undervalued or overvalued relative to equities, signaling potential mean reversion.
+Tracks historical price ratios between any two commodities or equity indices. Uses ML to detect when assets are historically mispriced relative to each other, signaling potential mean reversion.
 
 ## What It Does
 
-- Fetches 50+ years of daily price data for S&P 500, Nasdaq, Gold, and Silver via Yahoo Finance (free, no API key)
-- Calculates ratio: `index_price / metal_spot_price_per_oz` (e.g., how many oz of gold = 1 unit of S&P 500)
-- Computes 252-day rolling mean and ±2σ bands
+- Fetches 50+ years of daily price data for 9 assets across 4 categories via Yahoo Finance (free, no API key)
+- Computes ratio for any two selected assets: `asset_a_price / asset_b_price`
+- Computes 252-day rolling mean and ±2σ bands on the selected ratio
 - Calculates Z-score to detect extreme departures from the mean
-- Trains an IsolationForest ML model on all 4 ratio pairs simultaneously for multi-dimensional anomaly detection
+- Trains an IsolationForest ML model on 4 classic index/metal pairs for multi-dimensional anomaly detection
 - Generates alerts when ratios exceed ±2 standard deviations (mean reversion signals)
-- React + Tailwind frontend with interactive charts
+- Shows **Implied Prices** panel: what each asset would need to cost for the ratio to sit at mean, +2σ, or −2σ
+- React + Tailwind frontend with interactive charts and dynamic asset selection
 
-## Asset Pairs
+## Asset Coverage
 
-| Pair | Index | Metal | Interpretation |
-|------|-------|-------|----------------|
+| Symbol | Name | Type | Unit |
+|--------|------|------|------|
+| ^GSPC | S&P 500 | Index | USD |
+| ^IXIC | Nasdaq | Index | USD |
+| ^DJI | Dow Jones | Index | USD |
+| GC=F | Gold | Precious Metal | USD/oz |
+| SI=F | Silver | Precious Metal | USD/oz |
+| PL=F | Platinum | Precious Metal | USD/oz |
+| CL=F | WTI Crude Oil | Energy | USD/bbl |
+| NG=F | Natural Gas | Energy | USD/MMBtu |
+| HG=F | Copper | Industrial | USD/lb |
+
+Any two assets can be compared as a ratio in the UI.
+
+## Anomaly Detection (Classic Pairs)
+
+The IsolationForest model is trained on these 4 index/metal pairs simultaneously for multi-dimensional anomaly detection:
+
+| Pair | Numerator | Denominator | Interpretation |
+|------|-----------|-------------|----------------|
 | S&P 500 / Gold | ^GSPC | GC=F | oz of gold to buy 1 S&P 500 unit |
 | S&P 500 / Silver | ^GSPC | SI=F | oz of silver to buy 1 S&P 500 unit |
 | Nasdaq / Gold | ^IXIC | GC=F | oz of gold to buy 1 Nasdaq unit |
@@ -46,7 +65,7 @@ Open http://localhost:5173
 ## Project Structure
 
 ```
-metals-ratio-tracker/
+commodities-ratio-tracker/
 ├── pipeline/
 │   ├── requirements.txt       # Python dependencies
 │   ├── fetch_and_analyze.py   # Main pipeline script
@@ -60,7 +79,8 @@ metals-ratio-tracker/
 │       └── components/
 │           ├── RatioChart.tsx
 │           ├── AlertPanel.tsx
-│           ├── PairSelector.tsx
+│           ├── AssetSelector.tsx
+│           ├── ImpliedPrices.tsx
 │           ├── StatsBar.tsx
 │           └── LoadingState.tsx
 └── README.md
@@ -68,8 +88,8 @@ metals-ratio-tracker/
 
 ## Interpreting Alerts
 
-- **Z-Score > +2.0**: Ratio is abnormally high — equities are expensive relative to metals. Historically, metals rally or equities correct.
-- **Z-Score < −2.0**: Ratio is abnormally low — metals are expensive relative to equities. Historically, equities rally or metals correct.
-- **IsolationForest Anomaly**: Multi-dimensional dislocation across all 4 pairs simultaneously (top 5% most anomalous periods).
+- **Z-Score > +2.0**: Ratio is abnormally high — asset A is expensive relative to asset B. Historically, mean reversion follows.
+- **Z-Score < −2.0**: Ratio is abnormally low — asset A is cheap relative to asset B. Historically, mean reversion follows.
+- **IsolationForest Anomaly**: Multi-dimensional dislocation across all 4 classic pairs simultaneously (top 5% most anomalous periods).
 
 > **Disclaimer**: Not financial advice. Historical correlations don't guarantee future results.
