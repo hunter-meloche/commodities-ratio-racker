@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-gray-950 text-gray-100 antialiased;
+  }
+}
+
+@layer components {
+  .stat-card {
+    @apply bg-gray-900 border border-gray-800 rounded-xl p-4;
+  }
+
+  .alert-card-danger {
+    @apply bg-red-950 border border-red-800 rounded-xl p-4;
+  }
+
+  .alert-card-warning {
+    @apply bg-amber-950 border border-amber-800 rounded-xl p-4;
+  }
+}
