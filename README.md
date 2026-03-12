@@ -2,6 +2,8 @@
 
 Tracks historical price ratios between any two commodities or equity indices. Uses ML to detect when assets are historically mispriced relative to each other, signaling potential mean reversion.
 
+![Dashboard Preview](commodity.png)
+
 ## What It Does
 
 - Fetches 50+ years of daily price data for 9 assets across 4 categories via Yahoo Finance (free, no API key)
