@@ -8,6 +8,11 @@ import { StatsBar } from "./components/StatsBar";
 
 type LoadStatus = "loading" | "loaded" | "error";
 
+const METAL_NAMES: Record<string, string> = {
+  "GC=F": "gold",
+  "SI=F": "silver",
+};
+
 export default function App() {
   const [status, setStatus] = useState<LoadStatus>("loading");
   const [data, setData] = useState<RatioData | null>(null);
@@ -96,7 +101,7 @@ export default function App() {
                 <div>
                   <p className="text-gray-300 font-medium mb-1">The Ratio</p>
                   <p>
-                    Shows how many ounces of {selectedPair.metal_symbol === "GC=F" ? "gold" : "silver"} it
+                    Shows how many ounces of {METAL_NAMES[selectedPair.metal_symbol] ?? selectedPair.metal_symbol} it
                     takes to buy one unit of {selectedPair.index_symbol}. A rising ratio means equities are
                     getting more expensive relative to metals.
                   </p>

@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   ComposedChart,
   Line,
@@ -77,22 +78,26 @@ function CustomTooltip({ active, payload, label }: {
 }
 
 export function RatioChart({ pair }: RatioChartProps) {
-  const sampled = downsample(pair.timeseries);
+  const { chartData, anomalyPoints } = useMemo(() => {
+    const sampled = downsample(pair.timeseries);
+    const data: ChartPoint[] = [];
+    const anomalies: { date: string; ratio: number }[] = [];
 
-  // Build chart data with band as a tuple for Area stacking
-  const chartData: ChartPoint[] = sampled.map((p) => ({
-    date: p.date,
-    ratio: p.ratio,
-    mean: p.mean,
-    band: [p.lower_band, p.upper_band],
-    z_score: p.z_score,
-    is_anomaly: p.is_anomaly,
-  }));
+    for (const p of sampled) {
+      const point: ChartPoint = {
+        date: p.date,
+        ratio: p.ratio,
+        mean: p.mean,
+        band: [p.lower_band, p.upper_band],
+        z_score: p.z_score,
+        is_anomaly: p.is_anomaly,
+      };
+      data.push(point);
+      if (p.is_anomaly) anomalies.push({ date: p.date, ratio: p.ratio });
+    }
 
-  // Anomaly scatter points
-  const anomalyPoints = chartData
-    .filter((p) => p.is_anomaly)
-    .map((p) => ({ date: p.date, ratio: p.ratio }));
+    return { chartData: data, anomalyPoints: anomalies };
+  }, [pair.timeseries]);
 
   // Current ratio reference
   const currentRatio = pair.current.ratio;

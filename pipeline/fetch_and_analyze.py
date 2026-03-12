@@ -173,12 +173,10 @@ def main():
 
     # --- 5. IsolationForest on all ratios combined ---
     print("\nStep 5: Training IsolationForest...")
-    # Use only rows with valid rolling stats (after warmup)
-    valid_mask = ratio_df.notna().all(axis=1)
-    # Also need warmup period
-    warmup_mask = pd.Series(True, index=ratio_df.index)
-    for pid in ratio_cols:
-        warmup_mask = warmup_mask & stats_per_pair[pid]["mean"].notna()
+    # Use only rows after warmup period (all rolling means valid)
+    warmup_mask = pd.concat(
+        [stats_per_pair[pid]["mean"] for pid in ratio_cols], axis=1
+    ).notna().all(axis=1)
 
     valid_idx = ratio_df[warmup_mask].index
     ratio_valid = ratio_df.loc[valid_idx]
@@ -203,54 +201,57 @@ def main():
         stats = stats_per_pair[pid]
         ratio_series = ratio_df[pid]
 
-        # Filter to rows with valid rolling stats
-        valid_rows_mask = stats["mean"].notna()
-        ts_dates = ratio_series[valid_rows_mask].index
+        # Build a DataFrame of all columns, filter to post-warmup rows
+        ts_df = pd.DataFrame({
+            "ratio": ratio_series,
+            "mean": stats["mean"],
+            "upper_band": stats["upper_band"],
+            "lower_band": stats["lower_band"],
+            "z_score": stats["z_score"],
+            "is_anomaly": stats["is_anomaly"],
+            "if_anomaly": if_anomaly_full,
+        }).dropna(subset=["mean"])
 
-        timeseries = []
-        for date in ts_dates:
-            row_z = stats["z_score"][date]
-            row_dir = stats["direction"][date]
-            row_if = bool(if_anomaly_full[date]) if date in if_anomaly_full.index else False
+        # Vectorized rounding of all float columns at once
+        for col in ("ratio", "mean", "upper_band", "lower_band", "z_score"):
+            ts_df[col] = ts_df[col].round(4)
 
-            timeseries.append({
+        timeseries = [
+            {
                 "date": date.strftime("%Y-%m-%d"),
-                "ratio": safe_round(ratio_series[date]),
-                "mean": safe_round(stats["mean"][date]),
-                "upper_band": safe_round(stats["upper_band"][date]),
-                "lower_band": safe_round(stats["lower_band"][date]),
-                "z_score": safe_round(row_z),
-                "is_anomaly": bool(abs(row_z) > ANOMALY_THRESHOLD) if not np.isnan(row_z) else False,
-                "if_anomaly": row_if,
-            })
+                "ratio": row["ratio"],
+                "mean": row["mean"],
+                "upper_band": row["upper_band"],
+                "lower_band": row["lower_band"],
+                "z_score": row["z_score"],
+                "is_anomaly": bool(row["is_anomaly"]),
+                "if_anomaly": bool(row["if_anomaly"]),
+            }
+            for date, row in ts_df.iterrows()
+        ]
 
-        # Current (most recent valid row)
-        latest_date = ts_dates[-1]
-        latest_ratio = ratio_series[latest_date]
-        latest_z = stats["z_score"][latest_date]
-        latest_mean = stats["mean"][latest_date]
-        latest_upper = stats["upper_band"][latest_date]
-        latest_lower = stats["lower_band"][latest_date]
+        # Current = most recent row
+        latest = ts_df.iloc[-1]
+        latest_date = ts_df.index[-1]
         latest_dir = stats["direction"][latest_date] if pd.notna(stats["direction"][latest_date]) else None
-        latest_if = bool(if_anomaly_full[latest_date]) if latest_date in if_anomaly_full.index else False
-        latest_is_anomaly = bool(abs(latest_z) > ANOMALY_THRESHOLD) if not np.isnan(latest_z) else False
+        latest_is_anomaly = bool(latest["is_anomaly"])
         latest_signal = get_signal(latest_dir)
 
         current = {
-            "ratio": safe_round(latest_ratio),
-            "z_score": safe_round(latest_z),
-            "mean": safe_round(latest_mean),
-            "upper_band": safe_round(latest_upper),
-            "lower_band": safe_round(latest_lower),
+            "ratio": float(latest["ratio"]),
+            "z_score": float(latest["z_score"]),
+            "mean": float(latest["mean"]),
+            "upper_band": float(latest["upper_band"]),
+            "lower_band": float(latest["lower_band"]),
             "is_anomaly": latest_is_anomaly,
-            "if_anomaly": latest_if,
+            "if_anomaly": bool(latest["if_anomaly"]),
             "direction": latest_dir,
             "signal": latest_signal,
         }
 
         date_range = {
-            "start": ts_dates[0].strftime("%Y-%m-%d"),
-            "end": ts_dates[-1].strftime("%Y-%m-%d"),
+            "start": ts_df.index[0].strftime("%Y-%m-%d"),
+            "end": latest_date.strftime("%Y-%m-%d"),
         }
 
         pairs_output.append({
@@ -265,8 +266,7 @@ def main():
 
         # Build alert if anomalous
         if latest_is_anomaly:
-            dir_label = latest_dir or "unknown"
-            z_val = safe_round(latest_z)
+            z_val = float(latest["z_score"])
             if latest_dir == "metals_undervalued":
                 msg = f"{pair['name']} ratio is {z_val:.2f}σ above historical mean — metals appear undervalued vs equities"
             else:
