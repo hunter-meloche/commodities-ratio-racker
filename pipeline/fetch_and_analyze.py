@@ -10,6 +10,7 @@ import sys
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -65,7 +66,7 @@ def safe_round(val, decimals=4):
     return round(float(val), decimals)
 
 
-def fetch_ticker(ticker: str) -> pd.Series | None:
+def fetch_ticker(ticker: str) -> Optional[pd.Series]:
     """Download max history for a ticker, return Close price series."""
     print(f"  Fetching {ticker} ({TICKERS.get(ticker, ticker)})...")
     try:
@@ -117,7 +118,7 @@ def compute_ratio_stats(ratio: pd.Series, window: int = ROLLING_WINDOW):
     }
 
 
-def get_signal(direction: str | None) -> str | None:
+def get_signal(direction: Optional[str]) -> Optional[str]:
     if direction == "metals_undervalued":
         return "revert_to_metals"
     if direction == "metals_overvalued":
@@ -165,8 +166,10 @@ def main():
         pid = pair["id"]
         stats = compute_ratio_stats(ratio_df[pid])
         stats_per_pair[pid] = stats
-        latest_z = stats["z_score"].dropna().iloc[-1] if not stats["z_score"].dropna().empty else None
-        print(f"  {pair['name']}: Z-score = {latest_z:.4f if latest_z else 'N/A'}")
+        z_series = stats["z_score"].dropna()
+        latest_z = float(z_series.iloc[-1]) if not z_series.empty else None
+        z_str = f"{latest_z:.4f}" if latest_z is not None else "N/A"
+        print(f"  {pair['name']}: Z-score = {z_str}")
 
     # --- 5. IsolationForest on all ratios combined ---
     print("\nStep 5: Training IsolationForest...")
