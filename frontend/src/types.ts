@@ -1,47 +1,65 @@
-export interface TimeseriesPoint {
+// Raw data from data.json
+export interface AssetPoint {
   date: string;
-  ratio: number;
-  mean: number;
-  upper_band: number;
-  lower_band: number;
-  z_score: number;
-  is_anomaly: boolean;
-  if_anomaly: boolean;
+  price: number;
 }
 
-export interface PairCurrent {
-  ratio: number;
-  z_score: number;
-  mean: number;
-  upper_band: number;
-  lower_band: number;
-  is_anomaly: boolean;
-  if_anomaly: boolean;
-  direction: "metals_undervalued" | "metals_overvalued" | null;
-  signal: "revert_to_metals" | "revert_to_equities" | null;
-}
+export type AssetType = "index" | "metal" | "energy" | "industrial";
 
-export interface RatioPair {
-  id: string;
+export interface AssetInfo {
+  symbol: string;
   name: string;
-  index_symbol: string;
-  metal_symbol: string;
-  date_range: { start: string; end: string };
-  current: PairCurrent;
-  timeseries: TimeseriesPoint[];
+  type: AssetType;
+  unit: string;
+  timeseries: AssetPoint[];
 }
 
-export interface Alert {
-  pair_id: string;
-  pair_name: string;
+export interface RawAlert {
+  asset_a: string;
+  asset_b: string;
+  name: string;
   z_score: number;
-  direction: "metals_undervalued" | "metals_overvalued";
-  signal: "revert_to_metals" | "revert_to_equities";
+  direction: "a_overvalued" | "b_overvalued";
+  signal: "revert_down" | "revert_up";
   message: string;
 }
 
 export interface RatioData {
   generated_at: string;
-  pairs: RatioPair[];
-  alerts: Alert[];
+  assets: Record<string, AssetInfo>;
+  if_anomaly_dates: string[];
+  alerts: RawAlert[];
+}
+
+// Derived pair computed in the frontend
+export interface ComputedPoint {
+  date: string;
+  price_a: number;
+  price_b: number;
+  ratio: number;
+  mean: number;
+  upper_band: number;
+  lower_band: number;
+  z_score: number;
+  is_anomaly: boolean;
+  if_anomaly: boolean;
+}
+
+export interface DerivedPair {
+  name: string;
+  asset_a: AssetInfo;
+  asset_b: AssetInfo;
+  timeseries: ComputedPoint[];
+  current: {
+    ratio: number;
+    z_score: number;
+    mean: number;
+    upper_band: number;
+    lower_band: number;
+    price_a: number;
+    price_b: number;
+    is_anomaly: boolean;
+    if_anomaly: boolean;
+    direction: "a_overvalued" | "b_overvalued" | null;
+  };
 }

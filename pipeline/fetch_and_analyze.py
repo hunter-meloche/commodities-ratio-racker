@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Metals-Ratio Tracker Pipeline
-Fetches historical index and precious metals data, calculates price ratios,
-detects anomalies via Z-score and IsolationForest, and outputs data.json.
+Commodity Ratio Tracker Pipeline
+Fetches historical price data for indices and commodities, outputs individual
+asset series + IsolationForest anomaly dates for dynamic ratio computation
+in the frontend.
 """
 
 import json
@@ -21,38 +22,24 @@ warnings.filterwarnings("ignore")
 
 OUTPUT_PATH = Path(__file__).parent.parent / "frontend" / "public" / "data.json"
 
-TICKERS = {
-    "^GSPC": "S&P 500",
-    "^IXIC": "Nasdaq",
-    "GC=F": "Gold",
-    "SI=F": "Silver",
-}
+ASSETS = [
+    {"symbol": "^GSPC",  "name": "S&P 500",        "type": "index",      "unit": "USD"},
+    {"symbol": "^IXIC",  "name": "Nasdaq",          "type": "index",      "unit": "USD"},
+    {"symbol": "^DJI",   "name": "Dow Jones",       "type": "index",      "unit": "USD"},
+    {"symbol": "GC=F",   "name": "Gold",            "type": "metal",      "unit": "USD/oz"},
+    {"symbol": "SI=F",   "name": "Silver",          "type": "metal",      "unit": "USD/oz"},
+    {"symbol": "PL=F",   "name": "Platinum",        "type": "metal",      "unit": "USD/oz"},
+    {"symbol": "CL=F",   "name": "WTI Crude Oil",   "type": "energy",     "unit": "USD/bbl"},
+    {"symbol": "NG=F",   "name": "Natural Gas",     "type": "energy",     "unit": "USD/MMBtu"},
+    {"symbol": "HG=F",   "name": "Copper",          "type": "industrial", "unit": "USD/lb"},
+]
 
-PAIRS = [
-    {
-        "id": "sp500_gold",
-        "name": "S&P 500 / Gold (oz)",
-        "index_key": "^GSPC",
-        "metal_key": "GC=F",
-    },
-    {
-        "id": "sp500_silver",
-        "name": "S&P 500 / Silver (oz)",
-        "index_key": "^GSPC",
-        "metal_key": "SI=F",
-    },
-    {
-        "id": "nasdaq_gold",
-        "name": "Nasdaq / Gold (oz)",
-        "index_key": "^IXIC",
-        "metal_key": "GC=F",
-    },
-    {
-        "id": "nasdaq_silver",
-        "name": "Nasdaq / Silver (oz)",
-        "index_key": "^IXIC",
-        "metal_key": "SI=F",
-    },
+# Classic pairs used to train IsolationForest — alerts still generated for these
+CLASSIC_PAIRS = [
+    {"asset_a": "^GSPC", "asset_b": "GC=F", "name": "S&P 500 / Gold"},
+    {"asset_a": "^GSPC", "asset_b": "SI=F", "name": "S&P 500 / Silver"},
+    {"asset_a": "^IXIC", "asset_b": "GC=F", "name": "Nasdaq / Gold"},
+    {"asset_a": "^IXIC", "asset_b": "SI=F", "name": "Nasdaq / Silver"},
 ]
 
 ROLLING_WINDOW = 252
@@ -60,245 +47,174 @@ ANOMALY_THRESHOLD = 2.0
 CONTAMINATION = 0.05
 
 
-def safe_round(val, decimals=4):
-    if val is None or (isinstance(val, float) and np.isnan(val)):
-        return None
-    return round(float(val), decimals)
-
-
-def fetch_ticker(ticker: str) -> Optional[pd.Series]:
-    """Download max history for a ticker, return Close price series."""
-    print(f"  Fetching {ticker} ({TICKERS.get(ticker, ticker)})...")
+def fetch_ticker(symbol: str, name: str) -> Optional[pd.Series]:
+    print(f"  Fetching {symbol} ({name})...")
     try:
-        df = yf.download(ticker, period="max", auto_adjust=True, progress=False)
+        df = yf.download(symbol, period="max", auto_adjust=True, progress=False)
         if df.empty:
-            print(f"  WARNING: No data returned for {ticker}")
+            print(f"  WARNING: No data for {symbol}")
             return None
-
-        # Handle multi-level columns (yfinance >= 0.2.x returns MultiIndex)
-        if isinstance(df.columns, pd.MultiIndex):
-            close = df["Close"].squeeze()
-        else:
-            close = df["Close"]
-
-        # Ensure it's a Series
+        close = df["Close"].squeeze() if isinstance(df.columns, pd.MultiIndex) else df["Close"]
         if isinstance(close, pd.DataFrame):
             close = close.iloc[:, 0]
-
         close = close.dropna()
-        print(f"  OK: {ticker} — {len(close)} rows, {close.index[0].date()} to {close.index[-1].date()}")
+        print(f"  OK: {symbol} — {len(close)} rows, {close.index[0].date()} to {close.index[-1].date()}")
         return close
     except Exception as e:
-        print(f"  ERROR fetching {ticker}: {e}")
+        print(f"  ERROR {symbol}: {e}")
         return None
 
 
-def compute_ratio_stats(ratio: pd.Series, window: int = ROLLING_WINDOW):
-    """Compute rolling mean, std, z-score, and anomaly flags."""
-    mean = ratio.rolling(window).mean()
-    std = ratio.rolling(window).std()
-    z_score = (ratio - mean) / std
-
-    is_anomaly = z_score.abs() > ANOMALY_THRESHOLD
-    direction = pd.Series(index=ratio.index, dtype=object)
-    direction[z_score > ANOMALY_THRESHOLD] = "metals_undervalued"
-    direction[z_score < -ANOMALY_THRESHOLD] = "metals_overvalued"
-
-    upper_band = mean + ANOMALY_THRESHOLD * std
-    lower_band = mean - ANOMALY_THRESHOLD * std
-
+def rolling_stats(series: pd.Series, window: int) -> dict:
+    mean = series.rolling(window).mean()
+    std = series.rolling(window).std()
+    z = (series - mean) / std
     return {
         "mean": mean,
         "std": std,
-        "z_score": z_score,
-        "is_anomaly": is_anomaly,
-        "direction": direction,
-        "upper_band": upper_band,
-        "lower_band": lower_band,
+        "z_score": z,
+        "upper_band": mean + ANOMALY_THRESHOLD * std,
+        "lower_band": mean - ANOMALY_THRESHOLD * std,
+        "is_anomaly": z.abs() > ANOMALY_THRESHOLD,
     }
 
 
+def get_direction(z: float) -> Optional[str]:
+    if z > ANOMALY_THRESHOLD:
+        return "a_overvalued"   # asset A costs more A-units of B than usual
+    if z < -ANOMALY_THRESHOLD:
+        return "b_overvalued"
+    return None
+
+
 def get_signal(direction: Optional[str]) -> Optional[str]:
-    if direction == "metals_undervalued":
-        return "revert_to_metals"
-    if direction == "metals_overvalued":
-        return "revert_to_equities"
+    if direction == "a_overvalued":
+        return "revert_down"
+    if direction == "b_overvalued":
+        return "revert_up"
     return None
 
 
 def main():
-    print("=== Metals-Ratio Tracker Pipeline ===\n")
+    print("=== Commodity Ratio Tracker Pipeline ===\n")
 
-    # --- 1. Fetch all tickers ---
+    # 1. Fetch all assets
     print("Step 1: Fetching price data...")
-    raw = {}
-    for ticker in TICKERS:
-        series = fetch_ticker(ticker)
+    raw: dict[str, pd.Series] = {}
+    for asset in ASSETS:
+        series = fetch_ticker(asset["symbol"], asset["name"])
         if series is not None:
-            raw[ticker] = series
+            raw[asset["symbol"]] = series
 
-    if len(raw) < 4:
-        missing = [t for t in TICKERS if t not in raw]
-        print(f"\nERROR: Could not fetch data for: {missing}")
-        sys.exit(1)
+    fetched_symbols = set(raw.keys())
+    missing = [a["symbol"] for a in ASSETS if a["symbol"] not in fetched_symbols]
+    if missing:
+        print(f"  WARNING: Could not fetch: {missing}. Continuing with available assets.")
 
-    # --- 2. Align dates (inner join) ---
-    print("\nStep 2: Aligning dates across all series...")
-    combined = pd.DataFrame(raw).dropna()
-    print(f"  Aligned date range: {combined.index[0].date()} to {combined.index[-1].date()}")
-    print(f"  Total trading days: {len(combined)}")
+    # 2. Train IsolationForest on classic pairs (aligned dates)
+    print("\nStep 2: Training IsolationForest on classic pairs...")
+    classic_symbols = {a["asset_a"] for a in CLASSIC_PAIRS} | {a["asset_b"] for a in CLASSIC_PAIRS}
+    available_classic = classic_symbols & fetched_symbols
 
-    # --- 3. Compute ratios ---
-    print("\nStep 3: Calculating ratios...")
-    ratio_cols = {}
-    for pair in PAIRS:
-        ratio = combined[pair["index_key"]] / combined[pair["metal_key"]]
-        ratio_cols[pair["id"]] = ratio
-        current_val = ratio.iloc[-1]
-        print(f"  {pair['name']}: current ratio = {current_val:.4f}")
+    if_anomaly_dates: list[str] = []
 
-    ratio_df = pd.DataFrame(ratio_cols)
+    if available_classic == classic_symbols:
+        # Align classic symbols to common dates
+        classic_df = pd.DataFrame({s: raw[s] for s in classic_symbols}).dropna()
+        ratio_df = pd.DataFrame({
+            f"{p['asset_a']}/{p['asset_b']}": classic_df[p["asset_a"]] / classic_df[p["asset_b"]]
+            for p in CLASSIC_PAIRS
+        })
+        # Rolling stats for warmup
+        warmup_mask = pd.concat(
+            [ratio_df[col].rolling(ROLLING_WINDOW).mean() for col in ratio_df.columns],
+            axis=1
+        ).notna().all(axis=1)
+        valid_ratios = ratio_df[warmup_mask]
 
-    # --- 4. Statistical analysis per pair ---
-    print("\nStep 4: Computing rolling stats and Z-scores...")
-    stats_per_pair = {}
-    for pair in PAIRS:
-        pid = pair["id"]
-        stats = compute_ratio_stats(ratio_df[pid])
-        stats_per_pair[pid] = stats
-        z_series = stats["z_score"].dropna()
-        latest_z = float(z_series.iloc[-1]) if not z_series.empty else None
-        z_str = f"{latest_z:.4f}" if latest_z is not None else "N/A"
-        print(f"  {pair['name']}: Z-score = {z_str}")
+        clf = IsolationForest(contamination=CONTAMINATION, random_state=42)
+        labels = clf.fit_predict(valid_ratios)
+        anomaly_mask = labels == -1
+        if_anomaly_dates = [d.strftime("%Y-%m-%d") for d in valid_ratios.index[anomaly_mask]]
+        print(f"  Flagged {sum(anomaly_mask)} anomalous days out of {len(valid_ratios)}")
+    else:
+        print(f"  Skipping IF — missing classic symbols: {classic_symbols - available_classic}")
+        classic_df = pd.DataFrame()
+        ratio_df = pd.DataFrame()
 
-    # --- 5. IsolationForest on all ratios combined ---
-    print("\nStep 5: Training IsolationForest...")
-    # Use only rows after warmup period (all rolling means valid)
-    warmup_mask = pd.concat(
-        [stats_per_pair[pid]["mean"] for pid in ratio_cols], axis=1
-    ).notna().all(axis=1)
-
-    valid_idx = ratio_df[warmup_mask].index
-    ratio_valid = ratio_df.loc[valid_idx]
-
-    clf = IsolationForest(contamination=CONTAMINATION, random_state=42)
-    if_labels = clf.fit_predict(ratio_valid)  # -1 = anomaly, 1 = normal
-    if_anomaly = pd.Series(if_labels == -1, index=valid_idx)
-
-    # Reindex to full date range, fill False for warmup period
-    if_anomaly_full = if_anomaly.reindex(ratio_df.index, fill_value=False)
-
-    print(f"  IsolationForest flagged {if_anomaly.sum()} anomalous trading days out of {len(if_anomaly)}")
-
-    # --- 6. Build output JSON ---
-    print("\nStep 6: Building output JSON...")
-
-    pairs_output = []
+    # 3. Generate alerts for classic pairs
+    print("\nStep 3: Generating classic pair alerts...")
     alerts = []
-
-    for pair in PAIRS:
-        pid = pair["id"]
-        stats = stats_per_pair[pid]
-        ratio_series = ratio_df[pid]
-
-        # Build a DataFrame of all columns, filter to post-warmup rows
-        ts_df = pd.DataFrame({
-            "ratio": ratio_series,
-            "mean": stats["mean"],
-            "upper_band": stats["upper_band"],
-            "lower_band": stats["lower_band"],
-            "z_score": stats["z_score"],
-            "is_anomaly": stats["is_anomaly"],
-            "if_anomaly": if_anomaly_full,
-        }).dropna(subset=["mean"])
-
-        # Vectorized rounding of all float columns at once
-        for col in ("ratio", "mean", "upper_band", "lower_band", "z_score"):
-            ts_df[col] = ts_df[col].round(4)
-
-        timeseries = [
-            {
-                "date": date.strftime("%Y-%m-%d"),
-                "ratio": row["ratio"],
-                "mean": row["mean"],
-                "upper_band": row["upper_band"],
-                "lower_band": row["lower_band"],
-                "z_score": row["z_score"],
-                "is_anomaly": bool(row["is_anomaly"]),
-                "if_anomaly": bool(row["if_anomaly"]),
-            }
-            for date, row in ts_df.iterrows()
-        ]
-
-        # Current = most recent row
-        latest = ts_df.iloc[-1]
-        latest_date = ts_df.index[-1]
-        latest_dir = stats["direction"][latest_date] if pd.notna(stats["direction"][latest_date]) else None
-        latest_is_anomaly = bool(latest["is_anomaly"])
-        latest_signal = get_signal(latest_dir)
-
-        current = {
-            "ratio": float(latest["ratio"]),
-            "z_score": float(latest["z_score"]),
-            "mean": float(latest["mean"]),
-            "upper_band": float(latest["upper_band"]),
-            "lower_band": float(latest["lower_band"]),
-            "is_anomaly": latest_is_anomaly,
-            "if_anomaly": bool(latest["if_anomaly"]),
-            "direction": latest_dir,
-            "signal": latest_signal,
-        }
-
-        date_range = {
-            "start": ts_df.index[0].strftime("%Y-%m-%d"),
-            "end": latest_date.strftime("%Y-%m-%d"),
-        }
-
-        pairs_output.append({
-            "id": pid,
+    for pair in CLASSIC_PAIRS:
+        a, b = pair["asset_a"], pair["asset_b"]
+        if a not in raw or b not in raw:
+            continue
+        aligned = pd.DataFrame({"a": raw[a], "b": raw[b]}).dropna()
+        ratio = aligned["a"] / aligned["b"]
+        stats = rolling_stats(ratio, ROLLING_WINDOW)
+        valid = stats["mean"].notna()
+        if not valid.any():
+            continue
+        latest_z = float(stats["z_score"][valid].iloc[-1])
+        latest_dir = get_direction(latest_z)
+        if latest_dir is None:
+            continue
+        asset_a_info = next(x for x in ASSETS if x["symbol"] == a)
+        asset_b_info = next(x for x in ASSETS if x["symbol"] == b)
+        msg = (
+            f"{pair['name']} ratio is {abs(latest_z):.2f}σ "
+            f"{'above' if latest_z > 0 else 'below'} historical mean"
+        )
+        alerts.append({
+            "asset_a": a,
+            "asset_b": b,
             "name": pair["name"],
-            "index_symbol": pair["index_key"],
-            "metal_symbol": pair["metal_key"],
-            "date_range": date_range,
-            "current": current,
-            "timeseries": timeseries,
+            "z_score": round(latest_z, 4),
+            "direction": latest_dir,
+            "signal": get_signal(latest_dir),
+            "message": msg,
         })
 
-        # Build alert if anomalous
-        if latest_is_anomaly:
-            z_val = float(latest["z_score"])
-            if latest_dir == "metals_undervalued":
-                msg = f"{pair['name']} ratio is {z_val:.2f}σ above historical mean — metals appear undervalued vs equities"
-            else:
-                msg = f"{pair['name']} ratio is {abs(z_val):.2f}σ below historical mean — metals appear overvalued vs equities"
+    print(f"  {len(alerts)} alert(s) generated")
 
-            alerts.append({
-                "pair_id": pid,
-                "pair_name": pair["name"],
-                "z_score": z_val,
-                "direction": latest_dir,
-                "signal": latest_signal,
-                "message": msg,
-            })
+    # 4. Build per-asset output
+    print("\nStep 4: Building asset timeseries...")
+    assets_output = {}
+    for asset in ASSETS:
+        sym = asset["symbol"]
+        if sym not in raw:
+            continue
+        series = raw[sym]
+        ts = [
+            {"date": d.strftime("%Y-%m-%d"), "price": round(float(p), 4)}
+            for d, p in series.items()
+            if pd.notna(p)
+        ]
+        assets_output[sym] = {
+            "symbol": sym,
+            "name": asset["name"],
+            "type": asset["type"],
+            "unit": asset["unit"],
+            "timeseries": ts,
+        }
+        print(f"  {sym}: {len(ts)} points")
 
+    # 5. Write output
+    print("\nStep 5: Writing output...")
     output = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "pairs": pairs_output,
+        "assets": assets_output,
+        "if_anomaly_dates": if_anomaly_dates,
         "alerts": alerts,
     }
-
-    # --- 7. Write output ---
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(OUTPUT_PATH, "w") as f:
-        json.dump(output, f, indent=2, default=str)
+        json.dump(output, f, separators=(",", ":"))  # compact — no indent, file is large
 
-    print(f"\nOutput written to: {OUTPUT_PATH}")
-    print(f"Total pairs: {len(pairs_output)}")
-    print(f"Active alerts: {len(alerts)}")
-    if alerts:
-        for alert in alerts:
-            print(f"  ALERT: {alert['message']}")
-    print("\nDone!")
+    size_kb = OUTPUT_PATH.stat().st_size / 1024
+    print(f"\nOutput: {OUTPUT_PATH} ({size_kb:.0f} KB)")
+    print(f"Assets: {len(assets_output)}, Alerts: {len(alerts)}, IF dates: {len(if_anomaly_dates)}")
+    print("Done!")
 
 
 if __name__ == "__main__":
