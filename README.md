@@ -95,3 +95,5 @@ commodities-ratio-tracker/
 - **IsolationForest Anomaly**: Multi-dimensional dislocation across all 4 classic pairs simultaneously (top 5% most anomalous periods).
 
 > **Disclaimer**: Not financial advice. Historical correlations don't guarantee future results.
+
+> **Disclaimer:** See [DISCLAIMER.md](./DISCLAIMER.md) for legal notices.
