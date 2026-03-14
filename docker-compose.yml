@@ -1,0 +1,22 @@
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    volumes:
+      # Shared volume: pipeline writes data.json here, app reads it
+      - ./frontend/public:/app/frontend/public
+    restart: always
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8100:5173"
+    volumes:
+      # Same shared volume: Vite dev server serves data.json from public/
+      - ./frontend/public:/app/public
+    restart: always
+    depends_on:
+      - pipeline
